@@ -629,7 +629,7 @@ const inferState = {
   picks: new Set(),   // 勾选的待调 ID
   result: null,       // 最近一次成功返回
   resultKey: "",      // 结果产生时的输入指纹
-  appliedSig: "",     // 上一次点「应用」之后的输入指纹（与当前一致则结果仍代表现状）
+  appliedSig: "",     // 当前结果被「应用」之后的输入指纹（仅属于当前结果；新建议落地时清空，不得沿用）
   applied: false,     // 当前结果是否已写回图层
   invalidated: false, // 结果展示后参与输入是否曾变化过：一旦置位，改回原值也不恢复应用资格
   inflightId: 0,      // 当前仍可落地的在途请求序号；0 表示无（已完成 / 被更新请求取代 / 因输入变化作废）
@@ -900,6 +900,10 @@ async function runInfer() {
     inferState.result = data;
     inferState.resultKey = reqSig;
     inferState.applied = false;
+    // 上次应用的指纹只属于上一条建议：新建议不得沿用它获得应用资格，
+    // 否则「应用后改动其他图层、重新反推、再改回上次应用时的值」会让
+    // 与当前输入不符的新建议被误认为仍可写回图层
+    inferState.appliedSig = "";
     inferState.invalidated = false; // 新建议落地，重新获得应用资格
     renderInferResult(data);
   } catch (err) {
@@ -1014,6 +1018,13 @@ function applyInferResult() {
   // 记录应用后的状态指纹：在再次改动输入前，结果始终代表当前图层
   inferState.applied = true;
   inferState.appliedSig = inferSignature();
+  // 应用本身改写了图层：此前仍在途的反推请求一律永久作废——即使之后把输入
+  // 恢复成该请求发出时的样子，其响应（成功 / HTTP 错误 / 连接异常 / 解析失败）
+  // 也不会再落地，不能覆盖应用后的建议、错误提示与加载状态
+  inferState.inflightId = 0;
+  inferState.inflightSig = "";
+  elInferStatus.textContent = "";
+  elInferStatus.className = "status";
   renderInferResult(inferState.result);
   render();
   noteSolveInputChanged();
