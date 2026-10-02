@@ -764,9 +764,13 @@ function markInferStaleness() {
   }
   if (!inferState.result) return;
   const sig = inferSignature();
-  // 结果产生时、或上次应用建议值之后的状态，都视为与当前结果一致；
-  // 但只要曾不一致过，应用资格即被永久撤销——改回原值也不能恢复
-  const matches = sig === inferState.resultKey || sig === inferState.appliedSig;
+  // 资格锚点随应用状态二选一，绝不允许旧锚点给新状态背书：
+  //  - 尚未应用：只以结果产生时的指纹 resultKey 为准；
+  //  - 已应用：只以应用后的指纹 appliedSig 为准（应用前的 resultKey 已不再代表现状，
+  //    把图层改回请求 / 反推发出时的历史值也不能恢复资格）。
+  // 但只要曾偏离过锚点，应用资格即被永久撤销——改回原值也不能恢复。
+  const anchorSig = inferState.applied ? inferState.appliedSig : inferState.resultKey;
+  const matches = sig === anchorSig;
   if (!matches) inferState.invalidated = true;
   const fresh = matches && !inferState.invalidated;
   inferState.applied = inferState.applied && fresh;
@@ -788,7 +792,9 @@ function markInferStaleness() {
 function inferResultFresh() {
   if (!inferState.result || inferState.invalidated) return false;
   const sig = inferSignature();
-  return sig === inferState.resultKey || sig === inferState.appliedSig;
+  // 与 markInferStaleness 同一套锚点规则：未应用只认结果指纹，已应用只认应用后指纹
+  const anchorSig = inferState.applied ? inferState.appliedSig : inferState.resultKey;
+  return sig === anchorSig;
 }
 
 document.addEventListener("change", (e) => {
@@ -900,6 +906,10 @@ async function runInfer() {
     inferState.result = data;
     inferState.resultKey = reqSig;
     inferState.applied = false;
+    // 新建议绝不能沿用上一次应用留下的资格：清空 appliedSig。否则「应用 R1 →
+    // 改动另一图层后重新反推得到 R2 → 把该图层改回 R1 应用时的值」会让指纹重新
+    // 等于旧 appliedSig，R2 借此冒充「已应用」状态、其应用按钮被重新放行。
+    inferState.appliedSig = "";
     inferState.invalidated = false; // 新建议落地，重新获得应用资格
     renderInferResult(data);
   } catch (err) {
@@ -1014,6 +1024,17 @@ function applyInferResult() {
   // 记录应用后的状态指纹：在再次改动输入前，结果始终代表当前图层
   inferState.applied = true;
   inferState.appliedSig = inferSignature();
+  // 一次有效应用永久作废此前在途的反推：「已有有效建议时再反推，等待 / 读取响应体
+  // 期间应用该建议，随后把输入改回请求发出时的值」也不能让旧请求复活——序号不会被
+  // 复用（reqSeq 只增），且这里直接摘除当前在途身份；旧请求即便以成功、HTTP 错误、
+  // 连接异常或解析失败结束，响应守卫都会丢弃它，不覆盖已应用结果 / 提示，也不结束
+  // 较新请求的加载状态。加载指示（可能正显示「反推中…」）随在途身份一并结束。
+  if (inferState.inflightId !== 0) {
+    inferState.inflightId = 0;
+    inferState.inflightSig = "";
+    elInferStatus.textContent = "";
+    elInferStatus.className = "status";
+  }
   renderInferResult(inferState.result);
   render();
   noteSolveInputChanged();
